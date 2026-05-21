@@ -33,7 +33,7 @@ def _zip_directory(source_dir: Path, zip_path: Path) -> Path:
 
 def _build_args(base_model, output_dir, data_dir, epochs,
                 batch_size, grad_accum, lora_r, skip_scraping,
-                data_file=None) -> list[str]:
+                data_file=None, sources=None) -> list[str]:
     args = [
         sys.executable, str(SCRIPT_PATH),
         "--base_model", base_model,
@@ -47,8 +47,11 @@ def _build_args(base_model, output_dir, data_dir, epochs,
     if data_file:
         args += ["--data_file", str(data_file)]
         args.append("--skip_scraping")
-    elif skip_scraping:
-        args.append("--skip_scraping")
+    else:
+        if skip_scraping:
+            args.append("--skip_scraping")
+        if sources:
+            args += ["--sources"] + list(sources)
     return args
 
 
@@ -183,7 +186,7 @@ def _render_progress_html(stats: dict, total_epochs: int = 1) -> str:
 def start_and_stream(
     base_model, output_dir, data_dir,
     epochs, batch_size, grad_accum, lora_r,
-    skip_scraping, hf_token, data_file,
+    skip_scraping, hf_token, data_file, sources,
 ):
     global _training_process, _training_active
 
@@ -205,7 +208,7 @@ def start_and_stream(
     uploaded_path = data_file if isinstance(data_file, str) else (data_file.name if data_file else None)
     args = _build_args(base_model, output_dir, data_dir,
                        epochs, batch_size, grad_accum, lora_r, skip_scraping,
-                       data_file=uploaded_path)
+                       data_file=uploaded_path, sources=sources)
 
     header = (
         "🌿  Taoist LLM Fine-Tuning Pipeline\n"
@@ -374,7 +377,7 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
             gr.Markdown(
                 "### 📂  Training Data\n"
                 "Run `python scrape_data.py` on your **local machine** to generate a `taoist_data.jsonl` file, "
-                "then upload it here. If no file is uploaded the scraper will run on RunPod (requires internet)."
+                "then upload it here. If no file is uploaded the sources below will be scraped on RunPod."
             )
             with gr.Row():
                 data_file_inp = gr.File(
@@ -389,6 +392,13 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
                         interactive=False,
                         placeholder="Upload a .jsonl file to preview it here…",
                     )
+
+            sources_inp = gr.CheckboxGroup(
+                choices=["ctext", "sacred_texts", "nanhuaijin", "documentaries"],
+                value=["ctext", "sacred_texts"],
+                label="🌐  Data Sources (used when no file is uploaded)",
+                info="ctext = classical Chinese | sacred_texts = English translations (Legge/Giles) | nanhuaijin = HF dataset (needs HF token) | documentaries = film summaries",
+            )
 
             skip_scraping_inp = gr.Checkbox(
                 label="Skip web scraping — reuse already-downloaded corpus (ignored when file is uploaded)",
@@ -447,7 +457,7 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
         inputs=[
             base_model_inp, output_dir_inp, data_dir_inp,
             epochs_inp, batch_size_inp, grad_accum_inp, lora_r_inp,
-            skip_scraping_inp, hf_token_inp, data_file_inp,
+            skip_scraping_inp, hf_token_inp, data_file_inp, sources_inp,
         ],
         outputs=[log_box, status_md, train_btn, progress_html, progress_html_logs, error_html, error_html_logs],
     )

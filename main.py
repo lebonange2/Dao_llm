@@ -107,115 +107,279 @@ def download_model_if_needed(model_id: str, cache_dir: str) -> str:
     return str(cache_path)
 
 # ========================
-# DATA COLLECTION
+# DATA SOURCES
 # ========================
-def scrape_ctext_text(url: str, max_paragraphs: int = 500) -> List[str]:
-    """Scrape classical Chinese text from ctext.org with respectful rate limiting."""
-    headers = {"User-Agent": "TaoistLLM-Research/1.0 (Educational)"}
-    texts = []
-    try:
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        
-        for p in soup.select("div.ctext, p.chinese, .passage"):
-            text = p.get_text(strip=True)
-            if re.match(r"^[\u4e00-\u9fff\s，。？！；：、""''（）《》\-]+$", text) and len(text) > 15:
-                texts.append(text)
-                if len(texts) >= max_paragraphs:
-                    break
-        time.sleep(0.8)  # Respectful rate limit
-    except Exception as e:
-        logger.warning(f"Failed to scrape {url}: {e}")
-    return texts
+
+_PROMPT_TEMPLATES = [
+    "Reflect on this teaching in the spirit of wu wei (effortless action):",
+    "How might water respond to the wisdom in this passage?",
+    "What does this suggest about harmony with the Dao?",
+    "Consider this from the perspective of natural spontaneity (ziran):",
+    "In the tradition of Zhuangzi, how would you contemplate this idea?",
+    "What practical wisdom does this Taoist passage offer?",
+    "Explain this teaching from the Tao Te Ching.",
+]
+
+_FALLBACK_PAIRS = [
+    {"instruction": "What is the Tao?",
+     "response": "The Tao (道) is the fundamental principle underlying all of reality. It cannot be fully captured in words — 'The Tao that can be told is not the eternal Tao.' It is the source from which all things arise, the nameless beginning of heaven and earth. Rather than a deity or a force to be commanded, it is the natural way of the universe itself: silent, effortless, and inexhaustible."},
+    {"instruction": "What is wu wei?",
+     "response": "Wu wei (無為) literally means 'non-doing' or 'effortless action.' It does not mean laziness or passivity, but acting in complete harmony with the natural flow of things — without force, without ego, without unnecessary interference. The sage accomplishes everything through wu wei: 'Do nothing, and nothing is left undone.'"},
+    {"instruction": "What does the Tao Te Ching teach about water?",
+     "response": "Water is one of the central metaphors in the Tao Te Ching. 'The highest good is like water' (上善若水). Water benefits all living things without competing, dwelling willingly in the lowest places that others disdain. Nothing in the world is softer than water, yet nothing surpasses it in overcoming the hard and strong."},
+    {"instruction": "What does Taoism say about the relationship between opposites?",
+     "response": "Taoism sees opposites not as contradictions but as complementary aspects of a single whole. Beauty only exists because we recognise ugliness; good only because we know bad. This interdependence is captured in the image of yin and yang: two forces that generate and balance each other in endless, dynamic harmony."},
+    {"instruction": "What is the Taoist meaning of simplicity?",
+     "response": "Simplicity (樸, pu — the uncarved block) is one of Taoism's core values. The uncarved block represents potential in its purest form, before it has been shaped by ambition, social roles, or cultural conditioning. 'Manifest plainness, embrace simplicity, reduce selfishness, have few desires.'"},
+    {"instruction": "How should a leader govern according to Taoist philosophy?",
+     "response": "The Tao Te Ching describes the ideal ruler as one who governs through stillness and restraint. 'Governing a large state is like cooking a small fish' — handle it too much and you ruin it. The best leader is barely noticed by the people; when the work is done the people say: 'We did it ourselves.'"},
+    {"instruction": "What does Taoism teach about the acceptance of death?",
+     "response": "Taoism views death not as a tragedy but as a natural transformation. When Zhuangzi's wife died, he was found singing. Clinging to life and fearing death is like a child refusing to go home at the end of the day. The sage accepts the endless transformations of existence without resistance."},
+    {"instruction": "What does the Tao Te Ching say about the power of emptiness?",
+     "response": "Thirty spokes converge at the hub of a wheel, but it is the empty space at the centre that makes the wheel useful. Clay is shaped into a vessel, but it is the hollow space inside that makes it useful. Therefore, what exists serves for profit, but what does not exist serves for utility."},
+    {"instruction": "What is the Taoist view of knowledge and wisdom?",
+     "response": "'In pursuit of learning, every day something is added. In pursuit of the Tao, every day something is dropped.' True wisdom is not about accumulating facts but about shedding the ego and the compulsion to control. Knowing others is intelligence; knowing yourself is true wisdom."},
+    {"instruction": "How does Taoism approach conflict and competition?",
+     "response": "The Tao Te Ching states: 'The way of heaven benefits without harming; the way of the sage acts without contending.' Like water, the Taoist does not fight for high places but naturally finds the level. The soft overcomes the hard; the gentle overcomes the rigid."},
+    {"instruction": "What can we learn from the Tao about living with uncertainty?",
+     "response": "The Tao teaches that uncertainty and change are the nature of reality. 'Fortune and misfortune take turns with each other.' The sage does not grasp tightly at any outcome. By remaining flexible, present, and empty of fixed expectations, one can respond appropriately to whatever arises."},
+    {"instruction": "What is the significance of the three treasures in Taoism?",
+     "response": "The Tao Te Ching describes three treasures: compassion (慈), frugality (儉), and not daring to be first in the world (不敢為天下先). Compassion leads to true courage; frugality creates abundance; not presuming to lead allows one to become a true leader when the time comes."},
+    {"instruction": "How does Taoist philosophy relate to nature?",
+     "response": "Nature is the primary teacher in Taoism. The Tao expresses itself through the patterns of mountains, rivers, seasons, and living things. Human beings are not separate from nature but part of its flow. The Taoist sage acts as nature acts: purposefully but without forcing, consistently but without rigidity."},
+    {"instruction": "What is the Taoist teaching on self-knowledge?",
+     "response": "'Knowing others is wisdom; knowing yourself is enlightenment. Mastering others requires force; mastering yourself requires strength.' The inward journey is the foundation of Taoist practice. When one knows oneself deeply, action becomes effortless and flows from genuine nature."},
+    {"instruction": "How does the Zhuangzi describe the ideal Taoist sage?",
+     "response": "In the Zhuangzi, the ideal sage moves through the world like wind through trees — present, responsive, and leaving no trace. The famous story of Cook Ding illustrates this: his knife never dulls because he follows the natural structure of the animal, not forcing his way. This is Taoist mastery: moving effortlessly along the grain of reality."},
+    {"instruction": "How can Taoist philosophy be applied to modern daily life?",
+     "response": "Wu wei suggests: before acting, pause and ask whether action is truly necessary. In work, allow projects to develop at their natural pace. In relationships, practice listening and yielding. Simplify — reduce unnecessary possessions and mental noise. Spend time in nature. Notice the rhythms in your life and work with them rather than against them."},
+    {"instruction": "Explain the Taoist concept of yin and yang.",
+     "response": "Yin and yang are complementary aspects of a single reality. Yin is associated with receptivity, darkness, softness, the moon, and winter. Yang with activity, light, hardness, the sun, and summer. Each contains the seed of the other. Health and wisdom come from honouring both rather than insisting on one."},
+    {"instruction": "What does the Tao Te Ching say about happiness and contentment?",
+     "response": "'He who knows that enough is enough will always have enough.' Chasing wealth, fame, or pleasure is like trying to fill a leaking vessel. True contentment arises when one aligns with the Tao and stops measuring life against an imagined ideal. The sage finds the extraordinary within the ordinary."},
+    {"instruction": "What is the Taoist teaching on flexibility and resilience?",
+     "response": "Taoism prizes flexibility as the mark of life and rigidity as the mark of death. 'A man is born gentle and supple. At his death he is hard and stiff.' The tree that survives the storm is the one that bends. Resilience comes not from hardening against difficulty but from remaining fluid enough to flow around it."},
+    {"instruction": "What does the Tao Te Ching say about war and violence?",
+     "response": "'Weapons are instruments of fear; they are not a wise man's tools.' The military leader who delights in conquest is unfit to lead. Even in unavoidable conflict, the Taoist approach is to use minimum force and mourn those who fall on both sides. The greatest victories are won without battle."},
+]
+
+
+class TaoistDataSource:
+    """Base class for licensed, ethical Taoist data collection."""
+
+    def __init__(self, name: str, base_url: str = None):
+        self.name = name
+        self.base_url = base_url
+        self.collected: List[Dict[str, Any]] = []
+
+    def collect(self, **kwargs) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+
+class CTextSource(TaoistDataSource):
+    """Chinese Text Project — classical Chinese texts (public domain)."""
+
+    TEXTS = ["dao-de-jing", "zhuangzi", "liezi", "huainanzi"]
+
+    def __init__(self):
+        super().__init__("ctext", "https://ctext.org")
+
+    def collect(self, texts: List[str] = None, max_passages: int = 500) -> List[Dict[str, Any]]:
+        texts = texts or self.TEXTS
+        headers = {"User-Agent": "TaoistLLM-Research/2.0 (Educational)"}
+        for text_id in texts:
+            url = f"{self.base_url}/{text_id}"
+            try:
+                logger.info(f"  [ctext] Fetching {text_id} …")
+                resp = requests.get(url, headers=headers, timeout=15)
+                resp.raise_for_status()
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for p in soup.select("div.ctext, p.chinese, .passage"):
+                    content = p.get_text(strip=True)
+                    if re.match(r"^[\u4e00-\u9fff\s，。？！；：、""''（）《》\-]+$", content) and len(content) > 20:
+                        prompt = _PROMPT_TEMPLATES[hash(content) % len(_PROMPT_TEMPLATES)]
+                        self.collected.append({
+                            "source": "ctext", "language": "classical_chinese",
+                            "instruction": f"{prompt}\n\n{content}",
+                            "response": f"This classical passage embodies the Taoist way — effortless, natural, and pointing beyond words to the living flow of the Tao. {content}",
+                        })
+                        if len(self.collected) >= max_passages:
+                            return self.collected
+                time.sleep(0.8)
+            except Exception as e:
+                logger.warning(f"ctext scrape failed for {text_id}: {e}")
+        return self.collected
+
+
+class SacredTextsSource(TaoistDataSource):
+    """Sacred Texts Archive — public domain English translations (Legge, Giles)."""
+
+    TRANSLATIONS = {
+        "tao/taote":    "Tao Te Ching (Legge)",
+        "tao/chuang":   "Zhuangzi (Legge)",
+        "tao/lieh":     "Liezi (Giles)",
+    }
+
+    def __init__(self):
+        super().__init__("sacred_texts", "https://sacred-texts.com")
+
+    def collect(self, max_per_text: int = 80) -> List[Dict[str, Any]]:
+        for path, title in self.TRANSLATIONS.items():
+            url = f"{self.base_url}/{path}.htm"
+            try:
+                logger.info(f"  [sacred_texts] Fetching {title} …")
+                resp = requests.get(url, timeout=15)
+                resp.raise_for_status()
+                soup = BeautifulSoup(resp.text, "html.parser")
+                body = soup.find("div", class_="main") or soup.body
+                if not body:
+                    continue
+                raw = body.get_text(separator="\n", strip=True)
+                raw = re.sub(r"\[.*?\]|\(c\).*", "", raw)
+                paragraphs = [p.strip() for p in raw.split("\n\n") if len(p.strip()) > 60]
+                count = 0
+                for para in paragraphs:
+                    if count >= max_per_text:
+                        break
+                    prompt = _PROMPT_TEMPLATES[hash(para) % len(_PROMPT_TEMPLATES)]
+                    self.collected.append({
+                        "source": "sacred_texts", "language": "english",
+                        "instruction": f"{prompt}\n\n\"{para}\"",
+                        "response": (
+                            f"This passage from {title} reflects a core Taoist principle. "
+                            "It invites us to align with the natural flow of the Tao — acting without forcing, "
+                            "knowing without grasping, and finding strength in yielding. "
+                            "In practice, this means embodying wu wei: effortless action arising from "
+                            "one's deepest, most natural state of being."
+                        ),
+                    })
+                    count += 1
+                time.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"sacred_texts fetch failed for {path}: {e}")
+        return self.collected
+
+
+class NanhuaijinHFSource(TaoistDataSource):
+    """Hugging Face — Nanhuaijin scholarly commentaries (requires HF_TOKEN)."""
+
+    def __init__(self):
+        super().__init__("nanhuaijin_hf")
+
+    def collect(self, **kwargs) -> List[Dict[str, Any]]:
+        token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
+        if not token:
+            logger.info("  [nanhuaijin] HF_TOKEN not set — skipping.")
+            return []
+        try:
+            from datasets import load_dataset as _load_dataset
+            logger.info("  [nanhuaijin] Loading from HuggingFace …")
+            ds = _load_dataset("wobure/nanhuaijin-collections", split="train", token=token)
+            for item in ds:
+                content = item.get("content", "")[:1400]
+                if len(content) < 30:
+                    continue
+                prompt = _PROMPT_TEMPLATES[hash(content) % len(_PROMPT_TEMPLATES)]
+                self.collected.append({
+                    "source": "nanhuaijin_hf", "language": "modern_chinese",
+                    "instruction": f"{prompt}\n\n{content}",
+                    "response": f"In the spirit of Master Nan's commentaries: {content[:300]}…",
+                })
+            logger.info(f"  [nanhuaijin] Loaded {len(self.collected)} passages.")
+        except Exception as e:
+            logger.warning(f"nanhuaijin load failed: {e}")
+        return self.collected
+
+
+class DocumentaryMetadataSource(TaoistDataSource):
+    """Films For Action — documentary summaries (metadata only, not full transcripts)."""
+
+    TITLES = ["The Art of Effortless Living", "The Art of Letting Go", "Opening Dao"]
+
+    def __init__(self):
+        super().__init__("documentaries", "https://www.filmsforaction.org")
+
+    def collect(self, **kwargs) -> List[Dict[str, Any]]:
+        for title in self.TITLES:
+            url = f"{self.base_url}/search/?q={title.replace(' ', '+')}"
+            try:
+                resp = requests.get(url, timeout=10)
+                soup = BeautifulSoup(resp.text, "html.parser")
+                meta = soup.find("meta", attrs={"name": "description"})
+                desc = soup.find("p", class_="description")
+                summary = (meta.get("content") if meta else None) or (desc.get_text(strip=True) if desc else None)
+                if summary and len(summary) > 40:
+                    self.collected.append({
+                        "source": "documentaries", "language": "english",
+                        "instruction": f"What is the Taoist teaching explored in the documentary '{title}'?",
+                        "response": f"The documentary '{title}' explores: {summary}",
+                    })
+                time.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"Documentary metadata failed for '{title}': {e}")
+        return self.collected
+
+
+_SOURCE_MAP: Dict[str, type] = {
+    "ctext":         CTextSource,
+    "sacred_texts":  SacredTextsSource,
+    "nanhuaijin":    NanhuaijinHFSource,
+    "documentaries": DocumentaryMetadataSource,
+}
+
 
 def prepare_dataset(args: argparse.Namespace) -> Path:
-    """Download or load Taoist texts and save as JSONL."""
+    """Collect from all enabled sources and save as instruction-response JSONL."""
     output_path = Path(args.data_dir) / "taoist_corpus.jsonl"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     if args.skip_scraping and output_path.exists():
-        logger.info("Skipping scraping. Loading existing dataset.")
+        logger.info("Skipping scraping — loading existing dataset.")
         return output_path
 
-    logger.info("Starting data collection...")
-    urls = [
-        "https://ctext.org/dao-de-jing",
-        "https://ctext.org/zhuangzi",
-        "https://ctext.org/liezi"
-    ]
-    
-    corpus = []
-    for url in urls:
-        corpus.extend(scrape_ctext_text(url))
-    
-    _FALLBACK_CORPUS = [
-        "道可道，非常道；名可名，非常名。无名天地之始，有名万物之母。",
-        "上善若水。水善利万物而不争，处众人之所恶，故几于道。",
-        "天下皆知美之为美，斯恶已。皆知善之为善，斯不善已。",
-        "为学日益，为道日损。损之又损，以至於无为。无为而无不为。",
-        "知人者智，自知者明。胜人者有力，自胜者强。",
-        "致虚极，守静笃。万物并作，吾以观复。",
-        "信言不美，美言不信。善者不辩，辩者不善。",
-        "曲则全，枉则直，洼则盈，弊则新，少则得，多则惑。",
-        "知常容，容乃公，公乃全，全乃天，天乃道，道乃久，没身不殆。",
-        "为者败之，执者失之。是以圣人无为故无败，无执故无失。",
-        "合抱之木，生於毫末；九层之台，起於累土；千里之行，始於足下。",
-        "天下莫柔弱於水，而攻坚强者莫之能胜，以其无以易之。",
-        "圣人不积，既以为人己愈有，既以与人己愈多。",
-        "知足者富。强行者有志。不失其所者久。死而不亡者寿。",
-        "道生一，一生二，二生三，三生万物。万物负阴而抱阳，冲气以为和。",
-        "上士闻道，勤而行之；中士闻道，若存若亡；下士闻道，大笑之。",
-        "天下有道，却走马以粪。天下无道，戎马生於郊。",
-        "祸兮福之所倚，福兮祸之所伏。孰知其极？其无正也。",
-        "治大国，若烹小鲜。以道莅天下，其鬼不神。",
-        "江海之所以能为百谷王者，以其善下之，故能为百谷王。",
-        "人之生也柔弱，其死也坚强。草木之生也柔脆，其死也枯槁。",
-        "天之道，利而不害；圣人之道，为而不争。",
-        "知足不辱，知止不殆，可以长久。",
-        "为学日益，为道日损。",
-        "大道泛兮，其可左右。万物恃之以生而不辞，功成而弗名有。",
-        "执古之道，以御今之有。能知古始，是谓道纪。",
-        "归根曰静，是谓复命。复命曰常，知常曰明。",
-        "圣人不行而知，不见而明，不为而成。",
-        "善为道者，微妙玄通，深不可识。",
-        "为无为，事无事，味无味。大小多少，报怨以德。",
-        "天下皆谓我道大，似不肖。夫唯大，故似不肖。",
-        "我有三宝，持而保之：一曰慈，二曰俭，三曰不敢为天下先。",
-        "知我者希，则我者贵。是以圣人被褐而怀玉。",
-        "勇於敢则杀，勇於不敢则活。此两者，或利或害。",
-        "天之道，不争而善胜，不言而善应，不召而自来。",
-        "民不畏死，奈何以死惧之？",
-        "人之生也柔弱，其死也坚强。",
-        "小国寡民，使有什伯之器而不用，使民重死而不远徙。",
-        "道可道，非常道。名可名，非常名。无名万物之始，有名万物之母。",
-        "吾不知其名，强字之曰道，强为之名曰大。",
-        "有物混成，先天地生。寂兮寥兮，独立而不改，周行而不殆。",
-        "知其雄，守其雌，为天下谿。为天下谿，常德不离，复归於婴儿。",
-        "圣人无常心，以百姓心为心。善者，吾善之；不善者，吾亦善之；德善。",
-        "出生入死。生之徒十有三，死之徒十有三。",
-        "道生之，德畜之，物形之，势成之。是以万物莫不尊道而贵德。",
-        "修之於身，其德乃真；修之於家，其德乃余；修之於乡，其德乃长。",
-        "善建者不拔，善抱者不脱，子孙以祭祀不辍。",
-        "含德之厚，比於赤子。蜂虿虺蛇不螫，攫鸟猛兽不搏。",
-        "知者不言，言者不知。塞其兑，闭其门，挫其锐，解其纷。",
-        "以正治国，以奇用兵，以无事取天下。",
-        "其政闷闷，其民淳淳；其政察察，其民缺缺。",
-    ]
+    sources = getattr(args, "sources", ["ctext", "sacred_texts"])
+    logger.info(f"Starting multi-source data collection: {sources}")
 
-    if not corpus:
-        logger.warning("No data scraped — network may be unavailable. Using built-in fallback corpus (%d passages).", len(_FALLBACK_CORPUS))
-        corpus = _FALLBACK_CORPUS
-    elif len(corpus) < 20:
-        logger.warning("Only %d passages scraped — padding with fallback corpus.", len(corpus))
-        corpus = corpus + _FALLBACK_CORPUS
+    all_pairs: List[Dict[str, Any]] = []
+    for src_name in sources:
+        cls = _SOURCE_MAP.get(src_name)
+        if cls is None:
+            logger.warning(f"Unknown source '{src_name}' — skipping.")
+            continue
+        src = cls()
+        items = src.collect()
+        all_pairs.extend(items)
+        logger.info(f"✓ {src_name}: {len(items)} passages collected.")
+
+    if not all_pairs:
+        logger.warning("No data scraped — using built-in fallback corpus.")
+        all_pairs = list(_FALLBACK_PAIRS)
+    elif len(all_pairs) < 20:
+        logger.warning("Only %d passages — padding with fallback corpus.", len(all_pairs))
+        all_pairs = all_pairs + list(_FALLBACK_PAIRS)
+
+    # Deduplicate
+    seen: set = set()
+    deduped = []
+    for p in all_pairs:
+        key = re.sub(r"\s+", "", p.get("instruction", p.get("text", "")))[:80]
+        if key not in seen:
+            seen.add(key)
+            deduped.append(p)
 
     with open(output_path, "w", encoding="utf-8") as f:
-        for text in corpus:
-            json.dump({"text": text}, f, ensure_ascii=False)
+        for pair in deduped:
+            record = {
+                "instruction": pair.get("instruction", ""),
+                "response":    pair.get("response", pair.get("text", "")),
+                "source":      pair.get("source", "fallback"),
+                "language":    pair.get("language", "english"),
+                "text":        f"### Instruction:\n{pair.get('instruction','')}\n\n### Response:\n{pair.get('response','')}",
+            }
+            json.dump(record, f, ensure_ascii=False)
             f.write("\n")
-            
-    logger.info(f"Saved {len(corpus)} passages to {output_path}")
+
+    logger.info(f"✅ Saved {len(deduped)} passages to {output_path}")
     return output_path
 
 # ========================
@@ -392,6 +556,10 @@ def main():
     parser.add_argument("--grad_accum", type=int, default=4)
     parser.add_argument("--lora_r", type=int, default=16)
     parser.add_argument("--skip_scraping", action="store_true")
+    parser.add_argument("--sources", nargs="+",
+                        default=["ctext", "sacred_texts"],
+                        choices=list(_SOURCE_MAP.keys()),
+                        help="Data sources to collect from (default: ctext sacred_texts)")
     parser.add_argument("--model_cache_dir", type=str, default="./model_cache",
                         help="Local directory to cache the downloaded base model")
     parser.add_argument("--data_file", type=str, default=None,
