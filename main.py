@@ -381,6 +381,8 @@ def main():
     parser.add_argument("--skip_scraping", action="store_true")
     parser.add_argument("--model_cache_dir", type=str, default="./model_cache",
                         help="Local directory to cache the downloaded base model")
+    parser.add_argument("--data_file", type=str, default=None,
+                        help="Path to a pre-built .jsonl corpus file — skips all scraping")
     args = parser.parse_args()
     
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -393,7 +395,13 @@ def main():
         )
         
         # 1. Data
-        data_path = prepare_dataset(args)
+        if args.data_file and Path(args.data_file).exists():
+            logger.info(f"Using uploaded data file: {args.data_file}")
+            data_path = Path(args.data_file)
+        else:
+            if args.data_file:
+                logger.warning(f"--data_file '{args.data_file}' not found — falling back to scraper.")
+            data_path = prepare_dataset(args)
         tokenizer = AutoTokenizer.from_pretrained(local_model_path, trust_remote_code=True)
         dataset = format_dataset(tokenizer, data_path)
         

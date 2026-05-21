@@ -7,6 +7,7 @@ Accessible at http://0.0.0.0:7860 — forward this port on RunPod.
 import os
 import re
 import sys
+import json
 import zipfile
 import subprocess
 from pathlib import Path
@@ -31,7 +32,8 @@ def _zip_directory(source_dir: Path, zip_path: Path) -> Path:
 
 
 def _build_args(base_model, output_dir, data_dir, epochs,
-                batch_size, grad_accum, lora_r, skip_scraping) -> list[str]:
+                batch_size, grad_accum, lora_r, skip_scraping,
+                data_file=None) -> list[str]:
     args = [
         sys.executable, str(SCRIPT_PATH),
         "--base_model", base_model,
@@ -42,7 +44,10 @@ def _build_args(base_model, output_dir, data_dir, epochs,
         "--grad_accum", str(int(grad_accum)),
         "--lora_r",     str(int(lora_r)),
     ]
-    if skip_scraping:
+    if data_file:
+        args += ["--data_file", str(data_file)]
+        args.append("--skip_scraping")
+    elif skip_scraping:
         args.append("--skip_scraping")
     return args
 
@@ -178,7 +183,7 @@ def _render_progress_html(stats: dict, total_epochs: int = 1) -> str:
 def start_and_stream(
     base_model, output_dir, data_dir,
     epochs, batch_size, grad_accum, lora_r,
-    skip_scraping, hf_token,
+    skip_scraping, hf_token, data_file,
 ):
     global _training_process, _training_active
 
@@ -197,8 +202,10 @@ def start_and_stream(
         env["HUGGINGFACE_TOKEN"] = hf_token.strip()
         env["HF_TOKEN"]          = hf_token.strip()
 
+    uploaded_path = data_file if isinstance(data_file, str) else (data_file.name if data_file else None)
     args = _build_args(base_model, output_dir, data_dir,
-                       epochs, batch_size, grad_accum, lora_r, skip_scraping)
+                       epochs, batch_size, grad_accum, lora_r, skip_scraping,
+                       data_file=uploaded_path)
 
     header = (
         "🌿  Taoist LLM Fine-Tuning Pipeline\n"
@@ -363,8 +370,28 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
                 grad_accum_inp = gr.Slider(1, 16, value=4,  step=1,  label="Gradient Accumulation")
                 lora_r_inp     = gr.Slider(4, 64, value=16, step=4,  label="LoRA Rank (r)")
 
+            gr.Markdown("---")
+            gr.Markdown(
+                "### 📂  Training Data\n"
+                "Run `python scrape_data.py` on your **local machine** to generate a `taoist_data.jsonl` file, "
+                "then upload it here. If no file is uploaded the scraper will run on RunPod (requires internet)."
+            )
+            with gr.Row():
+                data_file_inp = gr.File(
+                    label="Upload taoist_data.jsonl  (optional)",
+                    file_types=[".jsonl", ".json"],
+                    type="filepath",
+                )
+                with gr.Column():
+                    data_preview = gr.Textbox(
+                        label="Preview (first 3 lines)",
+                        lines=3,
+                        interactive=False,
+                        placeholder="Upload a .jsonl file to preview it here…",
+                    )
+
             skip_scraping_inp = gr.Checkbox(
-                label="Skip web scraping — reuse already-downloaded corpus",
+                label="Skip web scraping — reuse already-downloaded corpus (ignored when file is uploaded)",
                 value=False,
             )
 
@@ -420,10 +447,24 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
         inputs=[
             base_model_inp, output_dir_inp, data_dir_inp,
             epochs_inp, batch_size_inp, grad_accum_inp, lora_r_inp,
-            skip_scraping_inp, hf_token_inp,
+            skip_scraping_inp, hf_token_inp, data_file_inp,
         ],
         outputs=[log_box, status_md, train_btn, progress_html, progress_html_logs, error_html, error_html_logs],
     )
+
+    def _preview_file(file):
+        if not file:
+            return ""
+        try:
+            path = file if isinstance(file, str) else file.name
+            lines = Path(path).read_text(encoding="utf-8").splitlines()[:3]
+            return "\n".join(
+                json.loads(ln).get("text", ln)[:120] for ln in lines if ln.strip()
+            )
+        except Exception as exc:
+            return f"Could not read file: {exc}"
+
+    data_file_inp.change(fn=_preview_file, inputs=[data_file_inp], outputs=[data_preview])
 
     stop_btn.click(fn=stop_training, outputs=status_md)
 
