@@ -506,4 +506,5 @@ if __name__ == "__main__":
         server_port=int(os.environ.get("GRADIO_PORT", 7860)),
         share=False,
         show_error=True,
+        allowed_paths=["/workspace", "/tmp"],
     )
