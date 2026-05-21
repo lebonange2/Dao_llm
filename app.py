@@ -426,30 +426,30 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
                 placeholder="Logs will stream here once training starts…",
             )
 
-        # ── Tab 3 : Download / Export ─────────────────────────
-        with gr.Tab("📥  Download / Export"):
+    # ── Always-visible: Download / Export (below tabs) ────────────
+    gr.Markdown("---")
+    gr.Markdown("## �  Download / Export Model")
+    gr.Markdown(
+        "Zips the **merged model** (if available) or the **LoRA adapter** "
+        "from the output directory and serves it for download. "
+        "This section is always available — click **Prepare Zip** after training finishes."
+    )
+    with gr.Row():
+        dl_dir_inp = gr.Textbox(value="/workspace/taoist_finetuned", label="Model Output Directory")
+        dl_btn     = gr.Button("📦  Prepare Zip", variant="primary")
 
-            gr.Markdown("### 📦  Download Model Weights")
-            gr.Markdown(
-                "Zips the **merged model** (if available) or the **LoRA adapter** "
-                "from the output directory and serves it for download."
-            )
-            with gr.Row():
-                dl_dir_inp = gr.Textbox(value="/workspace/taoist_finetuned", label="Model Output Directory")
-                dl_btn     = gr.Button("📦  Prepare Zip", variant="secondary")
+    dl_status = gr.Textbox(label="Status", interactive=False)
+    dl_file   = gr.File(label="⬇️  Click here to download the zip")
 
-            dl_status = gr.Textbox(label="", interactive=False)
-            dl_file   = gr.File(label="⬇️  Download Zip")
+    gr.Markdown("---")
+    gr.Markdown("### 🤗  Push to HuggingFace Hub")
 
-            gr.Markdown("---")
-            gr.Markdown("### 🤗  Push to HuggingFace Hub")
+    with gr.Row():
+        hub_repo_inp  = gr.Textbox(label="Repo ID", placeholder="username/taoist-qwen-7b")
+        hub_token_inp = gr.Textbox(label="HuggingFace Token", type="password", placeholder="hf_…")
 
-            with gr.Row():
-                hub_repo_inp  = gr.Textbox(label="Repo ID", placeholder="username/taoist-qwen-7b")
-                hub_token_inp = gr.Textbox(label="HuggingFace Token", type="password", placeholder="hf_…")
-
-            push_btn    = gr.Button("🚀  Push to Hub", variant="secondary")
-            push_status = gr.Textbox(label="", interactive=False)
+    push_btn    = gr.Button("🚀  Push to Hub", variant="secondary")
+    push_status = gr.Textbox(label="", interactive=False)
 
     # ── Events ───────────────────────────────────────────────
     train_btn.click(
