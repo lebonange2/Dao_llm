@@ -55,6 +55,33 @@ _IDLE_HTML = (
     "Waiting for training to start…</div>"
 )
 
+_NO_ERROR_HTML = "<div></div>"
+
+
+def _extract_error_html(tail_lines: list) -> str:
+    """Build a highlighted error panel from the last N lines of output."""
+    # Find the last 'Error:' or 'Traceback' block
+    error_start = 0
+    for i, ln in enumerate(tail_lines):
+        if ln.strip().startswith(("Traceback", "Error", "RuntimeError",
+                                   "ModuleNotFoundError", "ImportError",
+                                   "ValueError", "KeyError", "Exception")):
+            error_start = i
+    snippet = "".join(tail_lines[error_start:]).strip()
+    if not snippet:
+        snippet = "".join(tail_lines).strip() or "No output captured."
+    # Escape HTML special chars
+    snippet = snippet.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        "<div style='margin-top:8px;padding:14px;background:#450a0a;"
+        "border:1px solid #991b1b;border-radius:8px;color:#fca5a5;"
+        "font-family:monospace;font-size:12px;white-space:pre-wrap;'"
+        "><strong style='font-size:14px;color:#f87171;'>"
+        "❌  Training Error — scroll down in logs for full traceback</strong>\n\n"
+        + snippet
+        + "</div>"
+    )
+
 
 def _parse_progress(line: str, stats: dict) -> dict:
     """Extract epoch/step/loss/ETA from a tqdm or Trainer log line."""
@@ -160,8 +187,8 @@ def start_and_stream(
             "⚠️  Training is already running — wait for it to finish or stop it first.\n",
             gr.update(value="⚠️ Already running", visible=True),
             gr.update(interactive=False),
-            _IDLE_HTML,
-            _IDLE_HTML,
+            _IDLE_HTML, _IDLE_HTML,
+            _NO_ERROR_HTML, _NO_ERROR_HTML,
         )
         return
 
@@ -181,9 +208,10 @@ def start_and_stream(
     )
     accumulated = header
     progress_stats: dict = {}
+    tail_lines: list = []          # rolling buffer of last 30 lines
 
     _training_active = True
-    yield accumulated, gr.update(value="🔄 Training in progress…", visible=True), gr.update(interactive=False), _IDLE_HTML, _IDLE_HTML
+    yield accumulated, gr.update(value="🔄 Training in progress…", visible=True), gr.update(interactive=False), _IDLE_HTML, _IDLE_HTML, _NO_ERROR_HTML, _NO_ERROR_HTML
 
     try:
         _training_process = subprocess.Popen(
@@ -196,14 +224,17 @@ def start_and_stream(
         )
         for line in _training_process.stdout:
             accumulated += line
+            tail_lines.append(line)
+            if len(tail_lines) > 30:
+                tail_lines.pop(0)
             _parse_progress(line, progress_stats)
             prog_html = _render_progress_html(progress_stats, total_epochs=int(epochs))
             yield (
                 accumulated,
                 gr.update(),
                 gr.update(interactive=False),
-                prog_html,
-                prog_html,
+                prog_html, prog_html,
+                _NO_ERROR_HTML, _NO_ERROR_HTML,
             )
 
         _training_process.wait()
@@ -211,8 +242,10 @@ def start_and_stream(
 
     except Exception as exc:
         accumulated += f"\n❌  Unexpected error: {exc}\n"
+        tail_lines.append(str(exc))
         _training_active = False
-        yield accumulated, gr.update(value="❌ Error", visible=True), gr.update(interactive=True), _IDLE_HTML, _IDLE_HTML
+        err_html = _extract_error_html(tail_lines)
+        yield accumulated, gr.update(value="❌ Error", visible=True), gr.update(interactive=True), _IDLE_HTML, _IDLE_HTML, err_html, err_html
         return
 
     _training_active = False
@@ -220,10 +253,11 @@ def start_and_stream(
     if rc == 0:
         accumulated += f"\n{'─'*60}\n✅  Training complete!  Model saved to: {output_dir}\n"
         done_html = _render_progress_html({**progress_stats, 'pct': 100}, total_epochs=int(epochs))
-        yield accumulated, gr.update(value="✅ Training complete!", visible=True), gr.update(interactive=True), done_html, done_html
+        yield accumulated, gr.update(value="✅ Training complete!", visible=True), gr.update(interactive=True), done_html, done_html, _NO_ERROR_HTML, _NO_ERROR_HTML
     else:
         accumulated += f"\n{'─'*60}\n❌  Training failed (exit code {rc})\n"
-        yield accumulated, gr.update(value=f"❌ Failed (exit code {rc})", visible=True), gr.update(interactive=True), _IDLE_HTML, _IDLE_HTML
+        err_html = _extract_error_html(tail_lines)
+        yield accumulated, gr.update(value=f"❌ Failed (exit code {rc})", visible=True), gr.update(interactive=True), _IDLE_HTML, _IDLE_HTML, err_html, err_html
 
 
 def stop_training():
@@ -340,10 +374,12 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
 
             status_md     = gr.Textbox(label="Status", interactive=False, visible=False)
             progress_html = gr.HTML(value=_IDLE_HTML, label="Training Progress")
+            error_html    = gr.HTML(value=_NO_ERROR_HTML)
 
         # ── Tab 2 : Live Training Logs ────────────────────────
         with gr.Tab("📋  Training Logs"):
             progress_html_logs = gr.HTML(value=_IDLE_HTML, label="Training Progress")
+            error_html_logs    = gr.HTML(value=_NO_ERROR_HTML)
             log_box = gr.Textbox(
                 label="Live Output",
                 lines=30,
@@ -386,7 +422,7 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
             epochs_inp, batch_size_inp, grad_accum_inp, lora_r_inp,
             skip_scraping_inp, hf_token_inp,
         ],
-        outputs=[log_box, status_md, train_btn, progress_html, progress_html_logs],
+        outputs=[log_box, status_md, train_btn, progress_html, progress_html_logs, error_html, error_html_logs],
     )
 
     stop_btn.click(fn=stop_training, outputs=status_md)
