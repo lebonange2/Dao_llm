@@ -235,7 +235,6 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
                 lines=35,
                 max_lines=35,
                 interactive=False,
-                show_copy_button=True,
                 elem_classes=["log-box"],
                 placeholder="Logs will stream here once training starts…",
             )
