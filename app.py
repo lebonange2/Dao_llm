@@ -24,7 +24,9 @@ _training_active: bool = False
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _zip_directory(source_dir: Path, zip_path: Path) -> Path:
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+    """Archive a directory. Uses ZIP_STORED (no compression) because model
+    weight files (.safetensors, .bin) are dense binary and incompressible."""
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
         for f in source_dir.rglob("*"):
             if f.is_file():
                 zf.write(f, f.relative_to(source_dir.parent))
@@ -281,22 +283,27 @@ def stop_training():
 
 # ── Download / Export ─────────────────────────────────────────────────────────
 
-def prepare_download(output_dir: str):
+def prepare_download(output_dir: str, which: str = "adapter"):
     out = Path(output_dir)
     merged  = out / "merged_model"
     adapter = out / "adapter"
 
-    target = merged if merged.exists() else (adapter if adapter.exists() else None)
-    if target is None:
+    if which == "merged" and merged.exists():
+        target = merged
+    elif adapter.exists():
+        target = adapter
+    elif merged.exists():
+        target = merged
+    else:
         return None, "❌  No model found at that path. Run training first."
 
     zip_path = out / f"{target.name}.zip"
     if zip_path.exists():
         zip_path.unlink()
 
+    label = "merged model (~14 GB)" if target == merged else "LoRA adapter (~50 MB)"
     _zip_directory(target, zip_path)
     size_mb = zip_path.stat().st_size / (1024 * 1024)
-    label = "merged_model" if target == merged else "LoRA adapter"
     return str(zip_path), f"✅  {label} zipped → {zip_path.name}  ({size_mb:.1f} MB)"
 
 
@@ -428,14 +435,16 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
 
     # ── Always-visible: Download / Export (below tabs) ────────────
     gr.Markdown("---")
-    gr.Markdown("## �  Download / Export Model")
-    gr.Markdown(
-        "Zips the **merged model** (if available) or the **LoRA adapter** "
-        "from the output directory and serves it for download. "
-        "This section is always available — click **Prepare Zip** after training finishes."
-    )
+    gr.Markdown("## 📥  Download / Export Model")
+    gr.Markdown("Choose what to download after training completes:")
     with gr.Row():
         dl_dir_inp = gr.Textbox(value="/workspace/taoist_finetuned", label="Model Output Directory")
+        dl_which   = gr.Radio(
+            choices=["adapter", "merged"],
+            value="adapter",
+            label="What to download",
+            info="adapter = LoRA weights only (~50 MB, fast) — merged = full model (~14 GB, slow)",
+        )
         dl_btn     = gr.Button("📦  Prepare Zip", variant="primary")
 
     dl_status = gr.Textbox(label="Status", interactive=False)
@@ -480,7 +489,7 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
 
     dl_btn.click(
         fn=prepare_download,
-        inputs=[dl_dir_inp],
+        inputs=[dl_dir_inp, dl_which],
         outputs=[dl_file, dl_status],
     )
 
