@@ -222,35 +222,48 @@ def prepare_dataset(args: argparse.Namespace) -> Path:
 # DATASET FORMATTING
 # ========================
 def format_dataset(tokenizer: AutoTokenizer, data_path: Path, cache_dir: str = None) -> Dataset:
-    """Convert raw passages into instruction-tuning format."""
-    instructions = [
-        "How would a Daoist approach this?",
-        "Reflect on this teaching in the spirit of wu wei:",
-        "What does the Dao De Jing suggest about this passage?",
-        "Explain this from the perspective of natural harmony:"
+    """Convert passages into instruction-tuning format.
+
+    Supports two JSONL formats:
+      1. Rich format  — {"instruction": "...", "response": "..."}  (produced by scrape_data.py)
+      2. Plain format — {"text": "..."}  (legacy / raw Chinese passages)
+    """
+    _fallback_instructions = [
+        "How would a Daoist approach this teaching?",
+        "Reflect on this in the spirit of wu wei:",
+        "What does the Tao Te Ching suggest about this passage?",
+        "Explain this from the perspective of natural harmony:",
     ]
-    
+
     rows = []
     with open(data_path, "r", encoding="utf-8") as f:
         for line in f:
+            line = line.strip()
+            if not line:
+                continue
             item = json.loads(line)
-            text = item["text"]
-            
-            # Create instruction-response pair
-            instruction = instructions[hash(text) % len(instructions)]
-            
-            # Use native chat template if available, else fallback
+
+            if "instruction" in item and "response" in item:
+                # ── Rich format: use instruction + response directly ──
+                user_msg = item["instruction"]
+                asst_msg = item["response"]
+            else:
+                # ── Plain format: wrap raw text in a generic prompt ──
+                text = item.get("text", "")
+                user_msg = _fallback_instructions[hash(text) % len(_fallback_instructions)]
+                asst_msg = text
+
             if hasattr(tokenizer, "apply_chat_template"):
                 messages = [
-                    {"role": "user", "content": f"{instruction}\n{text}"},
-                    {"role": "assistant", "content": f"Consider this teaching as water considers the earth: it does not force, yet shapes all things. {text}"}
+                    {"role": "user",      "content": user_msg},
+                    {"role": "assistant", "content": asst_msg},
                 ]
                 formatted = tokenizer.apply_chat_template(messages, tokenize=False)
             else:
-                formatted = f"User: {instruction}\n{text}\n\nAssistant: Consider this teaching as water considers the earth: it does not force, yet shapes all things. {text}"
-                
+                formatted = f"User: {user_msg}\n\nAssistant: {asst_msg}"
+
             rows.append({"text": formatted})
-            
+
     dataset = Dataset.from_list(rows)
     logger.info(f"Formatted {len(dataset)} instruction samples.")
     return dataset
