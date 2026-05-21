@@ -17,8 +17,12 @@ RUN pip install --upgrade pip && \
 
 # Copy project files
 COPY main.py /workspace/main.py
+COPY app.py  /workspace/app.py
 COPY start.sh /workspace/start.sh
 
 RUN chmod +x /workspace/start.sh
+
+# Gradio web UI
+EXPOSE 7860
 
 CMD ["/workspace/start.sh"]
