@@ -335,6 +335,108 @@ def push_to_hub(output_dir: str, repo_id: str, hub_token: str):
         return f"❌  Push failed: {exc}"
 
 
+# ── Test / Inference ──────────────────────────────────────────────────────────
+
+_test_model = None
+_test_tokenizer = None
+
+
+def _load_test_model(output_dir: str):
+    """Load the trained adapter (or merged model) for interactive testing."""
+    global _test_model, _test_tokenizer
+
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    out = Path(output_dir)
+    merged  = out / "merged_model"
+    adapter = out / "adapter"
+
+    if merged.exists():
+        _test_tokenizer = AutoTokenizer.from_pretrained(str(merged), trust_remote_code=True)
+        _test_model = AutoModelForCausalLM.from_pretrained(
+            str(merged), torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True,
+        )
+        return "merged_model"
+    elif adapter.exists():
+        from peft import PeftModel
+        _test_tokenizer = AutoTokenizer.from_pretrained(str(adapter), trust_remote_code=True)
+        # Detect base model from adapter_config.json
+        cfg_path = adapter / "adapter_config.json"
+        base_name = "Qwen/Qwen2.5-7B-Instruct"
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text())
+            base_name = cfg.get("base_model_name_or_path", base_name)
+        # Try local cache first
+        cache_dir = out.parent / "model_cache" / base_name.replace("/", "_")
+        base_path = str(cache_dir) if cache_dir.exists() else base_name
+        base = AutoModelForCausalLM.from_pretrained(
+            base_path, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True,
+        )
+        _test_model = PeftModel.from_pretrained(base, str(adapter))
+        return "adapter"
+    else:
+        raise FileNotFoundError(f"No model found in {output_dir}")
+
+
+def test_model(output_dir: str, prompt: str, max_tokens: int, temperature: float):
+    """Generate a response from the trained model."""
+    global _test_model, _test_tokenizer
+
+    if not prompt.strip():
+        return "Enter a prompt above."
+
+    import torch
+
+    try:
+        # Load model on first call (or if output_dir changed)
+        if _test_model is None:
+            yield "⏳ Loading model… (first time takes 30-60 seconds)"
+            label = _load_test_model(output_dir)
+            yield f"✅ Loaded {label}. Generating…"
+
+        _test_model.eval()
+        if hasattr(_test_tokenizer, "apply_chat_template"):
+            messages = [{"role": "user", "content": prompt}]
+            text = _test_tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            )
+        else:
+            text = f"User: {prompt}\n\nAssistant:"
+
+        inputs = _test_tokenizer(text, return_tensors="pt").to(_test_model.device)
+        with torch.no_grad():
+            output = _test_model.generate(
+                **inputs,
+                max_new_tokens=int(max_tokens),
+                temperature=float(temperature),
+                do_sample=temperature > 0,
+                top_p=0.9,
+                repetition_penalty=1.1,
+            )
+        response = _test_tokenizer.decode(
+            output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True,
+        )
+        yield response.strip()
+
+    except FileNotFoundError as e:
+        yield f"❌ {e}"
+    except Exception as e:
+        yield f"❌ Error: {e}"
+
+
+def unload_test_model():
+    """Free GPU memory by unloading the test model."""
+    global _test_model, _test_tokenizer
+    import gc, torch
+    _test_model = None
+    _test_tokenizer = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return "✅ Model unloaded. GPU memory freed."
+
+
 # ── Build UI ──────────────────────────────────────────────────────────────────
 
 _CSS = """
@@ -433,6 +535,53 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
                 placeholder="Logs will stream here once training starts…",
             )
 
+        # ── Tab 3 : Test Model ──────────────────────────────
+        with gr.Tab("🧪  Test Model"):
+            gr.Markdown(
+                "### Try your fine-tuned model\n"
+                "Ask a question and see how the Taoist-aligned model responds. "
+                "The model loads on first use (~30-60 s) and stays cached for subsequent prompts."
+            )
+
+            with gr.Row():
+                test_dir_inp = gr.Textbox(
+                    value="/workspace/taoist_finetuned",
+                    label="Model Output Directory",
+                )
+
+            test_prompt_inp = gr.Textbox(
+                label="Your prompt",
+                placeholder="e.g. How can I find peace in a stressful world?",
+                lines=3,
+            )
+
+            with gr.Row():
+                test_max_tokens = gr.Slider(50, 500, value=200, step=50, label="Max tokens")
+                test_temp       = gr.Slider(0.0, 1.5, value=0.7, step=0.1, label="Temperature")
+
+            with gr.Row():
+                test_btn    = gr.Button("🌿  Generate", variant="primary", scale=4)
+                unload_btn  = gr.Button("🗑️  Unload model (free GPU)", variant="stop", scale=1)
+
+            test_output = gr.Textbox(
+                label="🌿 Model Response",
+                lines=10,
+                interactive=False,
+            )
+            unload_status = gr.Textbox(label="", interactive=False, visible=False)
+
+            gr.Markdown("#### Example prompts")
+            gr.Examples(
+                examples=[
+                    ["What is wu wei and how can I practice it?"],
+                    ["I'm stressed about work deadlines. What should I do?"],
+                    ["How should I handle conflict with a colleague?"],
+                    ["What does the Tao Te Ching teach about leadership?"],
+                    ["Is it better to act or not act?"],
+                ],
+                inputs=[test_prompt_inp],
+            )
+
     # ── Always-visible: Download / Export (below tabs) ────────────
     gr.Markdown("---")
     gr.Markdown("## 📥  Download / Export Model")
@@ -497,6 +646,17 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
         fn=push_to_hub,
         inputs=[dl_dir_inp, hub_repo_inp, hub_token_inp],
         outputs=[push_status],
+    )
+
+    test_btn.click(
+        fn=test_model,
+        inputs=[test_dir_inp, test_prompt_inp, test_max_tokens, test_temp],
+        outputs=[test_output],
+    )
+
+    unload_btn.click(
+        fn=unload_test_model,
+        outputs=[unload_status],
     )
 
 
