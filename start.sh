@@ -41,14 +41,16 @@ BATCH_SIZE="${BATCH_SIZE:-2}"
 GRAD_ACCUM="${GRAD_ACCUM:-4}"
 LORA_R="${LORA_R:-16}"
 SKIP_SCRAPING="${SKIP_SCRAPING:-false}"
+MODEL_CACHE_DIR="${MODEL_CACHE_DIR:-/workspace/model_cache}"
 
 echo "[INFO] Config:"
-echo "  BASE_MODEL  = $BASE_MODEL"
-echo "  OUTPUT_DIR  = $OUTPUT_DIR"
-echo "  EPOCHS      = $EPOCHS"
-echo "  BATCH_SIZE  = $BATCH_SIZE"
-echo "  GRAD_ACCUM  = $GRAD_ACCUM"
-echo "  LORA_R      = $LORA_R"
+echo "  BASE_MODEL      = $BASE_MODEL"
+echo "  MODEL_CACHE_DIR = $MODEL_CACHE_DIR"
+echo "  OUTPUT_DIR      = $OUTPUT_DIR"
+echo "  EPOCHS          = $EPOCHS"
+echo "  BATCH_SIZE      = $BATCH_SIZE"
+echo "  GRAD_ACCUM      = $GRAD_ACCUM"
+echo "  LORA_R          = $LORA_R"
 
 # Build the argument list
 ARGS=(
@@ -59,6 +61,7 @@ ARGS=(
     --batch_size "$BATCH_SIZE"
     --grad_accum "$GRAD_ACCUM"
     --lora_r "$LORA_R"
+    --model_cache_dir "$MODEL_CACHE_DIR"
 )
 
 if [ "$SKIP_SCRAPING" = "true" ]; then

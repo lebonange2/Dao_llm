@@ -39,6 +39,7 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel
 from trl import SFTTrainer
+from huggingface_hub import snapshot_download
 
 # ========================
 # CONFIG & LOGGING
@@ -57,6 +58,30 @@ TAOIST_EVAL_PROMPTS = [
     "How should I handle conflict with a colleague?",
     "What does it mean to live in harmony with the Dao?"
 ]
+
+# ========================
+# MODEL DOWNLOAD
+# ========================
+def download_model_if_needed(model_id: str, cache_dir: str) -> str:
+    """Download the base model to a local cache. Skip if already present."""
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(parents=True, exist_ok=True)
+
+    # Check if model files already exist in the cache
+    model_marker = cache_path / "config.json"
+    if model_marker.exists():
+        logger.info(f"Model already cached at {cache_dir} — skipping download.")
+        return str(cache_path)
+
+    logger.info(f"Downloading model '{model_id}' to {cache_dir} ...")
+    snapshot_download(
+        repo_id=model_id,
+        local_dir=str(cache_path),
+        local_dir_use_symlinks=False,
+        resume_download=True,
+    )
+    logger.info(f"✅ Model downloaded to {cache_dir}")
+    return str(cache_path)
 
 # ========================
 # DATA COLLECTION
@@ -120,7 +145,7 @@ def prepare_dataset(args: argparse.Namespace) -> Path:
 # ========================
 # DATASET FORMATTING
 # ========================
-def format_dataset(tokenizer: AutoTokenizer, data_path: Path) -> Dataset:
+def format_dataset(tokenizer: AutoTokenizer, data_path: Path, cache_dir: str = None) -> Dataset:
     """Convert raw passages into instruction-tuning format."""
     instructions = [
         "How would a Daoist approach this?",
@@ -157,10 +182,10 @@ def format_dataset(tokenizer: AutoTokenizer, data_path: Path) -> Dataset:
 # ========================
 # MODEL & TRAINING SETUP
 # ========================
-def setup_model_and_tokenizer(args: argparse.Namespace) -> tuple:
+def setup_model_and_tokenizer(args: argparse.Namespace, local_model_path: str) -> tuple:
     """Load tokenizer, model, and apply QLoRA + PEFT."""
-    logger.info(f"Loading tokenizer: {args.base_model}")
-    tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
+    logger.info(f"Loading tokenizer from: {local_model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(local_model_path, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
     
     logger.info("Configuring 4-bit quantization & LoRA...")
@@ -172,7 +197,7 @@ def setup_model_and_tokenizer(args: argparse.Namespace) -> tuple:
     )
     
     model = AutoModelForCausalLM.from_pretrained(
-        args.base_model,
+        local_model_path,
         quantization_config=bnb_config,
         device_map="auto",
         torch_dtype=torch.bfloat16,
@@ -251,11 +276,11 @@ def evaluate_model(model, tokenizer, args: argparse.Namespace):
         response = tokenizer.decode(outputs[0], skip_special_tokens=True)
         print(f"\nQ: {prompt}\nA: {response.split('Assistant:')[-1].strip()}\n" + "-"*60)
 
-def merge_and_save(model, tokenizer, args: argparse.Namespace):
+def merge_and_save(model, tokenizer, args: argparse.Namespace, local_model_path: str):
     """Merge LoRA adapter with base model."""
     logger.info("Merging adapter with base model...")
     base_model = AutoModelForCausalLM.from_pretrained(
-        args.base_model, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True
+        local_model_path, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True
     )
     merged = PeftModel.from_pretrained(base_model, os.path.join(args.output_dir, "adapter"))
     merged = merged.merge_and_unload()
@@ -278,18 +303,26 @@ def main():
     parser.add_argument("--grad_accum", type=int, default=4)
     parser.add_argument("--lora_r", type=int, default=16)
     parser.add_argument("--skip_scraping", action="store_true")
+    parser.add_argument("--model_cache_dir", type=str, default="./model_cache",
+                        help="Local directory to cache the downloaded base model")
     args = parser.parse_args()
     
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     
     try:
+        # 0. Download base model (skips if already cached)
+        local_model_path = download_model_if_needed(
+            args.base_model,
+            os.path.join(args.model_cache_dir, args.base_model.replace('/', '_'))
+        )
+        
         # 1. Data
         data_path = prepare_dataset(args)
-        tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(local_model_path, trust_remote_code=True)
         dataset = format_dataset(tokenizer, data_path)
         
         # 2. Model
-        model, tokenizer = setup_model_and_tokenizer(args)
+        model, tokenizer = setup_model_and_tokenizer(args, local_model_path)
         
         # 3. Train
         run_training(model, tokenizer, dataset, args)
@@ -298,7 +331,7 @@ def main():
         evaluate_model(model, tokenizer, args)
         
         # 5. Merge
-        merge_and_save(model, tokenizer, args)
+        merge_and_save(model, tokenizer, args, local_model_path)
         
         logger.info("🌿 Pipeline complete. May your model flow like water.")
         
