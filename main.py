@@ -57,12 +57,12 @@ from datasets import Dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    Trainer,
     TrainingArguments,
     BitsAndBytesConfig,
     DataCollatorForLanguageModeling,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel
-from trl import SFTTrainer
 from huggingface_hub import snapshot_download
 
 # ========================
@@ -219,18 +219,16 @@ def format_dataset(tokenizer: AutoTokenizer, data_path: Path, cache_dir: str = N
             texts.append(formatted)
 
     def _tokenize(batch):
-        enc = tokenizer(
+        return tokenizer(
             batch["text"],
             truncation=True,
             max_length=512,
             padding=False,
         )
-        enc["labels"] = [ids[:] for ids in enc["input_ids"]]
-        return enc
 
     raw = Dataset.from_dict({"text": texts})
     dataset = raw.map(_tokenize, batched=True, remove_columns=["text"])
-    logger.info(f"Tokenized {len(dataset)} instruction samples.")
+    logger.info(f"Tokenized {len(dataset)} instruction samples (columns: {dataset.column_names}).")
     return dataset
 
 # ========================
@@ -294,13 +292,12 @@ def run_training(model, tokenizer, dataset: Dataset, args: argparse.Namespace):
     logger.info("Starting training...")
     collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    trainer = SFTTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
         data_collator=collator,
         tokenizer=tokenizer,
-        packing=False,
     )
     trainer.train()
     trainer.save_state()
