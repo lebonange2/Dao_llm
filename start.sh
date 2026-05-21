@@ -5,10 +5,29 @@ echo "========================================="
 echo "  Taoist LLM Fine-Tuning — RunPod Setup  "
 echo "========================================="
 
+# ── Resolve script directory ──
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── Install / verify Python dependencies ──
+if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
+    echo "[INFO] Installing Python dependencies..."
+    pip install --quiet --upgrade pip
+    pip install --quiet -r "$SCRIPT_DIR/requirements.txt"
+    echo "[INFO] Dependencies installed."
+fi
+
 # ── HuggingFace login (required to download Qwen2.5-7B-Instruct) ──
 if [ -n "$HUGGINGFACE_TOKEN" ]; then
     echo "[INFO] Logging in to HuggingFace..."
-    huggingface-cli login --token "$HUGGINGFACE_TOKEN" --add-to-git-credential
+    # Try new CLI first, fall back to legacy
+    if command -v hf &> /dev/null; then
+        hf auth login --token "$HUGGINGFACE_TOKEN" 2>/dev/null || true
+    elif command -v huggingface-cli &> /dev/null; then
+        huggingface-cli login --token "$HUGGINGFACE_TOKEN" --add-to-git-credential 2>/dev/null || true
+    else
+        python -c "from huggingface_hub import login; login(token='$HUGGINGFACE_TOKEN')" 2>/dev/null || true
+    fi
+    echo "[INFO] HuggingFace login complete."
 else
     echo "[WARN] HUGGINGFACE_TOKEN not set. Download may fail for gated models."
 fi
