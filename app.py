@@ -5,6 +5,7 @@ Accessible at http://0.0.0.0:7860 — forward this port on RunPod.
 """
 
 import os
+import re
 import sys
 import zipfile
 import subprocess
@@ -46,6 +47,105 @@ def _build_args(base_model, output_dir, data_dir, epochs,
     return args
 
 
+# ── Progress parsing ─────────────────────────────────────────────────────────
+
+_IDLE_HTML = (
+    "<div style='padding:12px;background:#1e293b;border-radius:8px;"
+    "color:#94a3b8;font-family:sans-serif;font-style:italic;'>"
+    "Waiting for training to start…</div>"
+)
+
+
+def _parse_progress(line: str, stats: dict) -> dict:
+    """Extract epoch/step/loss/ETA from a tqdm or Trainer log line."""
+    # tqdm with epoch prefix:  "Epoch 1/3:  50%|█| 75/150 [01:23<01:23, 0.9it/s]"
+    m = re.search(
+        r'[Ee]poch\s+(\d+)\s*/\s*(\d+).*?(\d+)%\|.*?\|\s*(\d+)/(\d+)\s*\[([^<]+)<([^,\]]+)',
+        line,
+    )
+    if m:
+        stats.update({
+            'epoch_cur':   int(m.group(1)),
+            'epoch_total': int(m.group(2)),
+            'pct':         int(m.group(3)),
+            'step_cur':    int(m.group(4)),
+            'step_total':  int(m.group(5)),
+            'elapsed':     m.group(6).strip(),
+            'eta':         m.group(7).strip(),
+        })
+        return stats
+
+    # plain tqdm (no epoch prefix):  "50%|█| 75/150 [01:23<01:23, 0.9it/s]"
+    m2 = re.search(
+        r'^\s*(\d+)%\|.*?\|\s*(\d+)/(\d+)\s*\[([^<]+)<([^,\]]+)',
+        line,
+    )
+    if m2:
+        cur, total = int(m2.group(2)), int(m2.group(3))
+        stats.update({
+            'pct':      int(m2.group(1)),
+            'step_cur': cur,
+            'step_total': total,
+            'elapsed':  m2.group(4).strip(),
+            'eta':      m2.group(5).strip(),
+        })
+        return stats
+
+    # Trainer log dict:  {'loss': 2.123, 'learning_rate': 2e-4, 'epoch': 1.5}
+    lm = re.search(r"'loss':\s*([\d.]+)", line)
+    if lm:
+        stats['loss'] = float(lm.group(1))
+    em = re.search(r"'epoch':\s*([\d.]+)", line)
+    if em:
+        stats['epoch_float'] = float(em.group(1))
+
+    return stats
+
+
+def _render_progress_html(stats: dict, total_epochs: int = 1) -> str:
+    """Render a styled HTML progress card from the current stats dict."""
+    if not stats:
+        return _IDLE_HTML
+
+    pct         = stats.get('pct', 0)
+    epoch_cur   = stats.get('epoch_cur', '?')
+    epoch_total = stats.get('epoch_total', total_epochs)
+    step_cur    = stats.get('step_cur', '?')
+    step_total  = stats.get('step_total', '?')
+    loss        = stats.get('loss', None)
+    eta         = stats.get('eta', None)
+    elapsed     = stats.get('elapsed', None)
+
+    loss_str    = f"{loss:.4f}" if loss is not None else "—"
+    eta_str     = eta     if eta     else "—"
+    elapsed_str = elapsed if elapsed else "—"
+
+    bar_color = "#10b981" if pct < 100 else "#059669"
+    pct_label = f"{pct}%" if pct > 6 else ""
+
+    return f"""
+<div style="font-family:sans-serif;padding:14px;background:#1e293b;
+            border-radius:8px;color:#e2e8f0;margin-top:8px;">
+  <div style="display:flex;justify-content:space-between;
+              margin-bottom:10px;font-size:14px;gap:16px;flex-wrap:wrap;">
+    <span>📚 Epoch <strong style='color:#34d399'>{epoch_cur}/{epoch_total}</strong></span>
+    <span>👣 Step  <strong style='color:#34d399'>{step_cur}/{step_total}</strong></span>
+    <span>📉 Loss  <strong style='color:#f9a8d4'>{loss_str}</strong></span>
+    <span>⏱ Elapsed <strong>{elapsed_str}</strong></span>
+    <span>⏳ ETA <strong>{eta_str}</strong></span>
+  </div>
+  <div style="background:#334155;border-radius:6px;height:24px;overflow:hidden;">
+    <div style="width:{pct}%;background:linear-gradient(90deg,{bar_color},{bar_color}cc);
+                height:100%;display:flex;align-items:center;
+                justify-content:flex-end;padding-right:8px;
+                transition:width 0.4s ease;min-width:2%;">
+      <span style="color:white;font-size:12px;font-weight:700;">{pct_label}</span>
+    </div>
+  </div>
+</div>
+"""
+
+
 # ── Training (streaming generator) ───────────────────────────────────────────
 
 def start_and_stream(
@@ -60,6 +160,8 @@ def start_and_stream(
             "⚠️  Training is already running — wait for it to finish or stop it first.\n",
             gr.update(value="⚠️ Already running", visible=True),
             gr.update(interactive=False),
+            _IDLE_HTML,
+            _IDLE_HTML,
         )
         return
 
@@ -78,9 +180,10 @@ def start_and_stream(
         + "─" * 60 + "\n"
     )
     accumulated = header
+    progress_stats: dict = {}
 
     _training_active = True
-    yield accumulated, gr.update(value="🔄 Training in progress…", visible=True), gr.update(interactive=False)
+    yield accumulated, gr.update(value="🔄 Training in progress…", visible=True), gr.update(interactive=False), _IDLE_HTML, _IDLE_HTML
 
     try:
         _training_process = subprocess.Popen(
@@ -93,7 +196,15 @@ def start_and_stream(
         )
         for line in _training_process.stdout:
             accumulated += line
-            yield accumulated, gr.update(), gr.update(interactive=False)
+            _parse_progress(line, progress_stats)
+            prog_html = _render_progress_html(progress_stats, total_epochs=int(epochs))
+            yield (
+                accumulated,
+                gr.update(),
+                gr.update(interactive=False),
+                prog_html,
+                prog_html,
+            )
 
         _training_process.wait()
         rc = _training_process.returncode
@@ -101,17 +212,18 @@ def start_and_stream(
     except Exception as exc:
         accumulated += f"\n❌  Unexpected error: {exc}\n"
         _training_active = False
-        yield accumulated, gr.update(value="❌ Error", visible=True), gr.update(interactive=True)
+        yield accumulated, gr.update(value="❌ Error", visible=True), gr.update(interactive=True), _IDLE_HTML, _IDLE_HTML
         return
 
     _training_active = False
 
     if rc == 0:
         accumulated += f"\n{'─'*60}\n✅  Training complete!  Model saved to: {output_dir}\n"
-        yield accumulated, gr.update(value="✅ Training complete!", visible=True), gr.update(interactive=True)
+        done_html = _render_progress_html({**progress_stats, 'pct': 100}, total_epochs=int(epochs))
+        yield accumulated, gr.update(value="✅ Training complete!", visible=True), gr.update(interactive=True), done_html, done_html
     else:
         accumulated += f"\n{'─'*60}\n❌  Training failed (exit code {rc})\n"
-        yield accumulated, gr.update(value=f"❌ Failed (exit code {rc})", visible=True), gr.update(interactive=True)
+        yield accumulated, gr.update(value=f"❌ Failed (exit code {rc})", visible=True), gr.update(interactive=True), _IDLE_HTML, _IDLE_HTML
 
 
 def stop_training():
@@ -226,14 +338,16 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
                 train_btn = gr.Button("🚀  Start Training", variant="primary", scale=4)
                 stop_btn  = gr.Button("⛔  Stop",           variant="stop",    scale=1)
 
-            status_md = gr.Textbox(label="Status", interactive=False, visible=False)
+            status_md     = gr.Textbox(label="Status", interactive=False, visible=False)
+            progress_html = gr.HTML(value=_IDLE_HTML, label="Training Progress")
 
         # ── Tab 2 : Live Training Logs ────────────────────────
         with gr.Tab("📋  Training Logs"):
+            progress_html_logs = gr.HTML(value=_IDLE_HTML, label="Training Progress")
             log_box = gr.Textbox(
                 label="Live Output",
-                lines=35,
-                max_lines=35,
+                lines=30,
+                max_lines=30,
                 interactive=False,
                 elem_classes=["log-box"],
                 placeholder="Logs will stream here once training starts…",
@@ -272,7 +386,7 @@ Fine-tune **Qwen2.5-7B-Instruct** with Taoist philosophy using **QLoRA** on RunP
             epochs_inp, batch_size_inp, grad_accum_inp, lora_r_inp,
             skip_scraping_inp, hf_token_inp,
         ],
-        outputs=[log_box, status_md, train_btn],
+        outputs=[log_box, status_md, train_btn, progress_html, progress_html_logs],
     )
 
     stop_btn.click(fn=stop_training, outputs=status_md)
