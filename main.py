@@ -59,6 +59,7 @@ from transformers import (
     AutoTokenizer,
     TrainingArguments,
     BitsAndBytesConfig,
+    DataCollatorForLanguageModeling,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel
 from trl import SFTTrainer
@@ -186,7 +187,11 @@ def format_dataset(tokenizer: AutoTokenizer, data_path: Path, cache_dir: str = N
         "Explain this from the perspective of natural harmony:",
     ]
 
-    rows = []
+    tokenizer.padding_side = "right"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    texts = []
     with open(data_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -195,11 +200,9 @@ def format_dataset(tokenizer: AutoTokenizer, data_path: Path, cache_dir: str = N
             item = json.loads(line)
 
             if "instruction" in item and "response" in item:
-                # ── Rich format: use instruction + response directly ──
                 user_msg = item["instruction"]
                 asst_msg = item["response"]
             else:
-                # ── Plain format: wrap raw text in a generic prompt ──
                 text = item.get("text", "")
                 user_msg = _fallback_instructions[hash(text) % len(_fallback_instructions)]
                 asst_msg = text
@@ -213,10 +216,21 @@ def format_dataset(tokenizer: AutoTokenizer, data_path: Path, cache_dir: str = N
             else:
                 formatted = f"User: {user_msg}\n\nAssistant: {asst_msg}"
 
-            rows.append({"text": formatted})
+            texts.append(formatted)
 
-    dataset = Dataset.from_list(rows)
-    logger.info(f"Formatted {len(dataset)} instruction samples.")
+    def _tokenize(batch):
+        enc = tokenizer(
+            batch["text"],
+            truncation=True,
+            max_length=512,
+            padding=False,
+        )
+        enc["labels"] = [ids[:] for ids in enc["input_ids"]]
+        return enc
+
+    raw = Dataset.from_dict({"text": texts})
+    dataset = raw.map(_tokenize, batched=True, remove_columns=["text"])
+    logger.info(f"Tokenized {len(dataset)} instruction samples.")
     return dataset
 
 # ========================
@@ -278,14 +292,15 @@ def run_training(model, tokenizer, dataset: Dataset, args: argparse.Namespace):
     )
     
     logger.info("Starting training...")
+    collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
-        dataset_text_field="text",
-        max_seq_length=512,
+        data_collator=collator,
         tokenizer=tokenizer,
-        packing=False
+        packing=False,
     )
     trainer.train()
     trainer.save_state()
