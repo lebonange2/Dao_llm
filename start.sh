@@ -12,6 +12,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
     echo "[INFO] Installing Python dependencies..."
     pip install --quiet --upgrade pip
+
+    # Force-downgrade transformers if the installed version is incompatible
+    INSTALLED_TF=$(python -c "import transformers; print(transformers.__version__)" 2>/dev/null || echo "0.0.0")
+    echo "[INFO] Current transformers version: $INSTALLED_TF"
+    if python -c "from packaging.version import Version; exit(0 if Version('$INSTALLED_TF') >= Version('4.49.0') else 1)" 2>/dev/null; then
+        echo "[WARN] transformers $INSTALLED_TF is too new for this PyTorch — downgrading..."
+        pip install --quiet --force-reinstall "transformers>=4.40.0,<4.49.0"
+    fi
+
     pip install --quiet -r "$SCRIPT_DIR/requirements.txt"
     echo "[INFO] Dependencies installed."
 fi

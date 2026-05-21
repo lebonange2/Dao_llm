@@ -30,6 +30,29 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 import torch
+
+# ── Version guard: transformers >= 4.49 requires PyTorch >= 2.4 (DeviceMesh) ──
+def _check_transformers_version():
+    try:
+        import importlib.metadata
+        tf_ver = importlib.metadata.version("transformers")
+        major, minor = (int(x) for x in tf_ver.split(".")[:2])
+        if (major, minor) >= (4, 49):
+            torch_major, torch_minor = (int(x) for x in torch.__version__.split(".")[:2])
+            if (torch_major, torch_minor) < (2, 4):
+                raise RuntimeError(
+                    f"\n\n{'='*60}\n"
+                    f"ERROR: transformers {tf_ver} requires PyTorch >= 2.4, "
+                    f"but you have PyTorch {torch.__version__}.\n\n"
+                    f"Fix: pip install 'transformers>=4.40.0,<4.49.0'\n"
+                    f"  or: bash start.sh  (handles this automatically)\n"
+                    f"{'='*60}\n"
+                )
+    except importlib.metadata.PackageNotFoundError:
+        pass  # transformers not installed yet
+
+_check_transformers_version()
+
 from datasets import Dataset
 from transformers import (
     AutoModelForCausalLM,
