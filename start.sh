@@ -83,11 +83,11 @@ GRADIO_PORT="${GRADIO_PORT:-7860}"
 
 if [ "$LAUNCH_MODE" = "cli" ]; then
     echo "[INFO] CLI mode — starting training pipeline directly..."
-    python /workspace/main.py "${ARGS[@]}"
+    python "$SCRIPT_DIR/main.py" "${ARGS[@]}"
     echo "[INFO] Done. Outputs saved to $OUTPUT_DIR"
 else
     echo "[INFO] UI mode — launching Gradio web interface on port $GRADIO_PORT..."
-    echo "[INFO] Open http://localhost:$GRADIO_PORT in your browser"
+    echo "[INFO] Open http://0.0.0.0:$GRADIO_PORT in your browser"
     echo "[INFO] On RunPod: expose port $GRADIO_PORT in the pod's HTTP port settings"
-    GRADIO_PORT="$GRADIO_PORT" python /workspace/app.py
+    GRADIO_PORT="$GRADIO_PORT" python "$SCRIPT_DIR/app.py"
 fi
