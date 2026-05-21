@@ -1,0 +1,52 @@
+#!/bin/bash
+set -e
+
+echo "========================================="
+echo "  Taoist LLM Fine-Tuning — RunPod Setup  "
+echo "========================================="
+
+# ── HuggingFace login (required to download Qwen2.5-7B-Instruct) ──
+if [ -n "$HUGGINGFACE_TOKEN" ]; then
+    echo "[INFO] Logging in to HuggingFace..."
+    huggingface-cli login --token "$HUGGINGFACE_TOKEN" --add-to-git-credential
+else
+    echo "[WARN] HUGGINGFACE_TOKEN not set. Download may fail for gated models."
+fi
+
+# ── Configurable hyperparameters via environment variables ──
+BASE_MODEL="${BASE_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
+OUTPUT_DIR="${OUTPUT_DIR:-/workspace/taoist_finetuned}"
+DATA_DIR="${DATA_DIR:-/workspace/taoist_data}"
+EPOCHS="${EPOCHS:-3}"
+BATCH_SIZE="${BATCH_SIZE:-2}"
+GRAD_ACCUM="${GRAD_ACCUM:-4}"
+LORA_R="${LORA_R:-16}"
+SKIP_SCRAPING="${SKIP_SCRAPING:-false}"
+
+echo "[INFO] Config:"
+echo "  BASE_MODEL  = $BASE_MODEL"
+echo "  OUTPUT_DIR  = $OUTPUT_DIR"
+echo "  EPOCHS      = $EPOCHS"
+echo "  BATCH_SIZE  = $BATCH_SIZE"
+echo "  GRAD_ACCUM  = $GRAD_ACCUM"
+echo "  LORA_R      = $LORA_R"
+
+# Build the argument list
+ARGS=(
+    --base_model "$BASE_MODEL"
+    --output_dir "$OUTPUT_DIR"
+    --data_dir "$DATA_DIR"
+    --epochs "$EPOCHS"
+    --batch_size "$BATCH_SIZE"
+    --grad_accum "$GRAD_ACCUM"
+    --lora_r "$LORA_R"
+)
+
+if [ "$SKIP_SCRAPING" = "true" ]; then
+    ARGS+=(--skip_scraping)
+fi
+
+echo "[INFO] Starting training pipeline..."
+python /workspace/main.py "${ARGS[@]}"
+
+echo "[INFO] Done. Outputs saved to $OUTPUT_DIR"
